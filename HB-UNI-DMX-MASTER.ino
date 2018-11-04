@@ -6,7 +6,8 @@
 
 // define this to read the device id, serial and device type from bootloader section
 // #define USE_OTA_BOOTLOADER
-#define NDEBUG
+
+//#define NDEBUG
 
 #define EI_NOTEXTERNAL
 #include <EnableInterrupt.h>
@@ -14,16 +15,22 @@
 #include <LowPower.h>
 
 #include <Register.h>
+#include <Switch.h>
 #include <MultiChannelDevice.h>
 #include "Dmx.h"
 DMXDev dmx;
 
+#define MSG_START_CHR  0x56
+#define MSG_END_CHR    0x57
+
+uint8_t G_DMX_ON_COMMAND[]  = {MSG_START_CHR, 0x01, 0xff, 0x02, 0xff, 0x03, 0xff, MSG_END_CHR};
+uint8_t G_DMX_OFF_COMMAND[] = {MSG_START_CHR, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, MSG_END_CHR};
 
 #define CONFIG_BUTTON_PIN  8
 #define LED_PIN            4
-#define MSG_START_KEY   0x56
-#define MSG_END_KEY     0x57
-
+#define ERROR_LED_PIN      6
+#define BTN_1_PIN          7
+#define BTN_2_PIN          9
 
 // number of available peers per channel
 #define PEERS_PER_CHANNEL  8
@@ -32,6 +39,18 @@ struct dmxparam_t {
   byte Channel = 0;
   byte Value = 0;
 } DmxParam;
+
+
+#define remISR(device,chan,pin) class device##chan##ISRHandler { \
+    public: \
+      static void isr () { device.remoteChannel(chan).irq(); } \
+  }; \
+  device.remoteChannel(chan).button().init(pin); \
+  if( digitalPinToInterrupt(pin) == NOT_AN_INTERRUPT ) \
+    enableInterrupt(pin,device##chan##ISRHandler::isr,CHANGE); \
+  else \
+    attachInterrupt(digitalPinToInterrupt(pin),device##chan##ISRHandler::isr,CHANGE);
+
 
 // all library classes are placed in the namespace 'as'
 using namespace as;
@@ -42,7 +61,7 @@ const struct DeviceInfo PROGMEM devinfo = {
   "JPDMX00001",                // Device Serial
   {0xF3, 0x42},                // Device Model
   0x10,                        // Firmware Version
-  as::DeviceType::Remote,      // Device Type
+  as::DeviceType::Switch,      // Device Type
   {0x00, 0x00}                 // Info Bytes
 };
 
@@ -50,24 +69,135 @@ const struct DeviceInfo PROGMEM devinfo = {
    Configure the used hardware
 */
 typedef AskSin<StatusLed<LED_PIN>, NoBattery, Radio<AvrSPI<10, 11, 12, 13>, 2>> Hal;
+typedef StatusLed<ERROR_LED_PIN> ErrorLedType;
+ErrorLedType ErrorLED;
 Hal hal;
 
 
-DEFREGISTER(DMXReg0, MASTERID_REGS)
+DEFREGISTER(DMXReg0, MASTERID_REGS, DREG_INTKEY)
 class DMXList0 : public RegList0<DMXReg0> {
   public:
     DMXList0 (uint16_t addr) : RegList0<DMXReg0>(addr) {}
+
     void defaults () {
+      intKeyVisible(true);
       clear();
     }
 };
 
-DEFREGISTER(DMXReg1)
+DEFREGISTER(DMXReg1, CREG_AES_ACTIVE)
 class DMXList1 : public RegList1<DMXReg1> {
   public:
     DMXList1 (uint16_t addr) : RegList1<DMXReg1>(addr) {}
     void defaults () {
       clear();
+    }
+};
+
+class SwChannel : public Channel<Hal, DMXList1, SwitchList3, EmptyList, PEERS_PER_CHANNEL, DMXList0>, public SwitchStateMachine {
+
+  protected:
+    typedef Channel<Hal, DMXList1, SwitchList3, EmptyList, PEERS_PER_CHANNEL, DMXList0> BaseChannel;
+    uint8_t lastmsgcnt;
+
+  public:
+    SwChannel () : BaseChannel(), lastmsgcnt(0xff) {}
+    virtual ~SwChannel() {}
+
+    void init () {
+      typename BaseChannel::List1 l1 = BaseChannel::getList1();
+      status(l1.powerUpAction() == true ? 200 : 0, 0xffff );
+      BaseChannel::changed(true);
+    }
+
+    void setup(Device<Hal, DMXList0>* dev, uint8_t number, uint16_t addr) {
+      BaseChannel::setup(dev, number, addr);
+    }
+
+    uint8_t flags () const {
+      uint8_t flags = SwitchStateMachine::flags();
+      if ( this->device().battery().low() == true ) {
+        flags |= 0x80;
+      }
+      return flags;
+    }
+
+    virtual void switchState(__attribute__((unused)) uint8_t oldstate, uint8_t newstate, __attribute__((unused)) uint32_t delay) {
+      if ( newstate == AS_CM_JT_ON ) {
+        DPRINTLN("SWITCH TURN ON");
+        for (uint8_t cidx = 1; cidx < sizeof(G_DMX_ON_COMMAND) - 1; cidx++) {
+          if (G_DMX_ON_COMMAND[cidx] == MSG_END_CHR)
+            break;
+          uint8_t ch = G_DMX_ON_COMMAND[cidx]; uint8_t val = G_DMX_ON_COMMAND[cidx + 1];
+          DPRINT("Channel = "); DDECLN(ch); DPRINT("Value   = "); DDECLN(val);
+          DmxParam.Channel = ch; DmxParam.Value = val;
+          dmx.write(DmxParam.Channel, DmxParam.Value);
+          cidx++;
+        }
+      }
+      else if ( newstate == AS_CM_JT_OFF ) {
+        DPRINTLN("SWITCH TURN OFF");
+        for (uint8_t cidx = 1; cidx < sizeof(G_DMX_OFF_COMMAND) - 1; cidx++) {
+          if (G_DMX_OFF_COMMAND[cidx] == MSG_END_CHR)
+            break;
+          uint8_t ch = G_DMX_OFF_COMMAND[cidx]; uint8_t val = G_DMX_OFF_COMMAND[cidx + 1];
+          DPRINT("Channel = "); DDECLN(ch); DPRINT("Value   = "); DDECLN(val);
+          DmxParam.Channel = ch; DmxParam.Value = val;
+          dmx.write(DmxParam.Channel, DmxParam.Value);
+          cidx++;
+        }
+      }
+      BaseChannel::changed(true);
+    }
+
+    bool process (__attribute__((unused)) const ActionCommandMsg& msg) {
+      DPRINTLN("PROCESS process");
+
+      return true;
+    }
+
+    bool process (const ActionSetMsg& msg) {
+      DPRINTLN("PROCESS ActionSetMsg");
+      status( msg.value(), msg.delay() );
+      return true;
+    }
+
+    bool process (const RemoteEventMsg& msg) {
+      DPRINTLN("PROCESS RemoteEventMsg");
+
+      bool lg = msg.isLong();
+      Peer p(msg.peer());
+      uint8_t cnt = msg.counter();
+      typename BaseChannel::List3 l3 = BaseChannel::getList3(p);
+      if ( l3.valid() == true ) {
+        // l3.dump();
+        typename BaseChannel::List3::PeerList pl = lg ? l3.lg() : l3.sh();
+        // pl.dump();
+        if ( cnt != lastmsgcnt || (lg == true && pl.multiExec() == true) ) {
+          lastmsgcnt = cnt;
+          remote(pl, cnt);
+        }
+        return true;
+      }
+      return false;
+    }
+
+    bool process (const SensorEventMsg& msg) {
+      DPRINTLN("PROCESS SensorEventMsg");
+
+      bool lg = msg.isLong();
+      Peer p(msg.peer());
+      uint8_t cnt = msg.counter();
+      uint8_t value = msg.value();
+      typename BaseChannel::List3 l3 = BaseChannel::getList3(p);
+      if ( l3.valid() == true ) {
+        // l3.dump();
+        typename BaseChannel::List3::PeerList pl = lg ? l3.lg() : l3.sh();
+        // pl.dump();
+        sensor(pl, cnt, value);
+        return true;
+      }
+      return false;
     }
 };
 
@@ -90,7 +220,6 @@ class DMXChannel : public Channel<Hal, DMXList1, EmptyList, DefList4, PEERS_PER_
     }
 
     void configChanged() {
-
     }
 
     uint8_t status () const {
@@ -113,8 +242,8 @@ class DMXChannel : public Channel<Hal, DMXList1, EmptyList, DefList4, PEERS_PER_
         commandIdx++;
       }
 
-      if (msg.eot(MSG_END_KEY)) {
-        if (commandIdx > 0 && command[0] == MSG_START_KEY) {
+      if (msg.eot(MSG_END_CHR)) {
+        if (commandIdx > 0 && command[0] == MSG_START_CHR) {
           DPRINT("RECV: ");
           for (int i = 0; i < commandIdx; i++) {
             DHEX(command[i]); DPRINT(" ");
@@ -134,8 +263,9 @@ class DMXChannel : public Channel<Hal, DMXList1, EmptyList, DefList4, PEERS_PER_
             DmxParam.Value = val;
             dmx.write(DmxParam.Channel, DmxParam.Value);
           }
+        } else {
+          ErrorLED.ledOn(seconds2ticks(3));
         }
-
         commandIdx = 0;
         memset(command, 0, sizeof(command));
       }
@@ -170,36 +300,62 @@ class DMXChannel : public Channel<Hal, DMXList1, EmptyList, DefList4, PEERS_PER_
     }
 };
 
-class DMXDevice : public ChannelDevice<Hal, VirtBaseChannel<Hal, DMXList0>, 2, DMXList0> {
+class DMXDevice : public ChannelDevice<Hal, VirtBaseChannel<Hal, DMXList0>, 3, DMXList0> {
   public:
-    VirtChannel<Hal, DMXChannel, DMXList0> c1, c2;
+    VirtChannel<Hal, SwChannel,  DMXList0> c1;
+    VirtChannel<Hal, DMXChannel, DMXList0> c2, c3;
   public:
-    typedef ChannelDevice<Hal, VirtBaseChannel<Hal, DMXList0>, 2, DMXList0> DeviceType;
+    typedef ChannelDevice<Hal, VirtBaseChannel<Hal, DMXList0>, 3, DMXList0> DeviceType;
     DMXDevice (const DeviceInfo& info, uint16_t addr) : DeviceType(info, addr) {
       DeviceType::registerChannel(c1, 1);
       DeviceType::registerChannel(c2, 2);
+      DeviceType::registerChannel(c3, 3);
     }
     virtual ~DMXDevice () {}
-
-    DMXChannel& dmx1Channel ()  {
+    SwChannel& switchChannel ()  {
       return c1;
     }
-    DMXChannel& dmx2Channel ()  {
-      return c2;
+    DMXChannel& remoteChannel (uint8_t num)  {
+      switch (num) {
+        case 2:
+          return c2;
+          break;
+        case 3:
+          return c3;
+          break;
+        default:
+          return c2;
+      }
     }
-    virtual void configChanged () {
 
+    virtual void configChanged () {
     }
 };
 
 DMXDevice sdev(devinfo, 0x20);
 ConfigButton<DMXDevice> cfgBtn(sdev);
 
+void initPeerings (bool first) {
+  // create internal peerings - CCU2 needs this
+  if ( first == true ) {
+    HMID devid;
+    sdev.getDeviceID(devid);
+    sdev.switchChannel().peer(Peer(devid, 2));
+    sdev.remoteChannel(2).peer(Peer(devid, 1));
+  }
+}
+
 void setup () {
-  dmx.init(512);
+  dmx.init(0xff);
   DINIT(57600, ASKSIN_PLUS_PLUS_IDENTIFIER);
-  sdev.init(hal);
+  bool first = sdev.init(hal);
+  sdev.switchChannel().init();
+  remISR(sdev, 2, BTN_1_PIN);
+  remISR(sdev, 3, BTN_2_PIN);
+
+  ErrorLED.init();
   buttonISR(cfgBtn, CONFIG_BUTTON_PIN);
+  initPeerings(first);
   sdev.initDone();
 }
 
@@ -207,7 +363,7 @@ void loop() {
   bool worked = hal.runready();
   bool poll = sdev.pollRadio();
   if ( worked == false && poll == false ) {
-   // hal.activity.savePower<Idle<true>>(hal);
+    // hal.activity.savePower<Idle<true>>(hal);
   }
 
   dmx.update();

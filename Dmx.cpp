@@ -10,10 +10,9 @@
 #define BREAKFORMAT    SERIAL_8N1
 
 bool dmxStarted = false;
-int sendPin = 1;	
+int sendPin = 1;
 uint8_t dmxData[dmxMaxChannel] = {};
 int chanSize;
-
 
 void DMXDev::init() {
   chanSize = defaultMax;
@@ -31,9 +30,10 @@ void DMXDev::init(int chanQuant) {
   }
 
   chanSize = chanQuant;
-
+#ifdef NDEBUG
   Serial.begin(DMXSPEED);
   pinMode(sendPin, OUTPUT);
+#endif
   dmxStarted = true;
 }
 
@@ -43,7 +43,7 @@ uint8_t DMXDev::read(int Channel) {
 
   if (Channel < 1) Channel = 1;
   if (Channel > dmxMaxChannel) Channel = dmxMaxChannel;
-  return(dmxData[Channel]);
+  return (dmxData[Channel]);
 }
 
 // Function to send DMX data
@@ -61,13 +61,15 @@ void DMXDev::write(int Channel, uint8_t value) {
 void DMXDev::end() {
   delete dmxData;
   chanSize = 0;
+#ifdef NDEBUG
   Serial.end();
+#endif
   dmxStarted == false;
 }
 
 void DMXDev::update() {
   if (dmxStarted == false) init();
-
+#ifdef NDEBUG
   //Send break
   digitalWrite(sendPin, HIGH);
   Serial.begin(BREAKSPEED, BREAKFORMAT);
@@ -83,4 +85,6 @@ void DMXDev::update() {
   Serial.flush();
   delay(1);
   Serial.end();
+#endif
 }
+
