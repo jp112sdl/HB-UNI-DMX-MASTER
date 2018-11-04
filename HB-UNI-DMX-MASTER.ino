@@ -7,7 +7,7 @@
 // define this to read the device id, serial and device type from bootloader section
 // #define USE_OTA_BOOTLOADER
 
-//#define NDEBUG
+#define NDEBUG
 
 #define EI_NOTEXTERNAL
 #include <EnableInterrupt.h>
@@ -17,8 +17,6 @@
 #include <Register.h>
 #include <Switch.h>
 #include <MultiChannelDevice.h>
-#include "Dmx.h"
-DMXDev dmx;
 
 #define MSG_START_CHR  0x56
 #define MSG_END_CHR    0x57
@@ -40,6 +38,57 @@ struct dmxparam_t {
   byte Value = 0;
 } DmxParam;
 
+class DMXDev {
+#define DMXMAXCHANNELS 0xff
+#define DMXSPEED       250000
+#define DMXFORMAT      SERIAL_8N2
+#define BREAKSPEED     83333
+#define BREAKFORMAT    SERIAL_8N1
+    bool dmxStarted = false;
+    int sendPin = 1;
+    uint8_t dmxData[DMXMAXCHANNELS] = {};
+    uint16_t chanSize;
+  public:
+    void init(uint16_t chanQuant) {
+      chanSize = chanQuant;
+#ifdef NDEBUG
+      Serial.begin(DMXSPEED);
+      pinMode(sendPin, OUTPUT);
+#endif
+      dmxStarted = true;
+    }
+    void write(uint16_t Channel, uint8_t value) {
+      if (dmxStarted == false) init(chanSize);
+      if (Channel < 1) Channel = 1;
+      if (Channel > chanSize) Channel = chanSize;
+      if (value < 0) value = 0;
+      if (value > 255) value = 255;
+      dmxData[Channel] = value;
+    }
+    void update() {
+      if (dmxStarted == false) init(chanSize);
+      //Send break
+#ifdef NDEBUG
+
+      digitalWrite(sendPin, HIGH);
+      Serial.begin(BREAKSPEED, BREAKFORMAT);
+      Serial.write(0);
+      Serial.flush();
+      delay(1);
+      Serial.end();
+
+      //send data
+      Serial.begin(DMXSPEED, DMXFORMAT);
+      digitalWrite(sendPin, LOW);
+      Serial.write(dmxData, chanSize);
+      Serial.flush();
+      delay(1);
+      Serial.end();
+#endif
+    }
+};
+
+DMXDev dmx;
 
 #define remISR(device,chan,pin) class device##chan##ISRHandler { \
     public: \
@@ -346,7 +395,7 @@ void initPeerings (bool first) {
 }
 
 void setup () {
-  dmx.init(0xff);
+  dmx.init(DMXMAXCHANNELS);
   DINIT(57600, ASKSIN_PLUS_PLUS_IDENTIFIER);
   bool first = sdev.init(hal);
   sdev.switchChannel().init();
@@ -368,3 +417,4 @@ void loop() {
 
   dmx.update();
 }
+
