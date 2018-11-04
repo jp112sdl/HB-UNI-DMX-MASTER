@@ -13,7 +13,6 @@
 #include <EnableInterrupt.h>
 #include <AskSinPP.h>
 #include <LowPower.h>
-
 #include <Register.h>
 #include <Switch.h>
 #include <MultiChannelDevice.h>
@@ -21,7 +20,7 @@
 #define MSG_START_CHR  0x56
 #define MSG_END_CHR    0x57
 
-uint8_t G_DMX_ON_COMMAND[]  = {MSG_START_CHR, 0x01, 0xff, 0x02, 0xff, 0x03, 0xff, MSG_END_CHR};
+uint8_t G_DMX_ON_COMMAND [] = {MSG_START_CHR, 0x01, 0xff, 0x02, 0xff, 0x03, 0xff, MSG_END_CHR};
 uint8_t G_DMX_OFF_COMMAND[] = {MSG_START_CHR, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, MSG_END_CHR};
 
 #define CONFIG_BUTTON_PIN  8
