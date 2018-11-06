@@ -18,8 +18,8 @@ uint8_t G_DMX_OFF_COMMAND[] = {MSG_START_CHR, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00
   - sinnvolle Verwendung ist hier die Direktverknüpfung mit einer Fernbedienung, Wandtaster, o.ä.
 
 
-#### Geräteansicht
-![ccu_geraete](Images/CCU_Geraete.png)
+#### Status und Bedienung
+![ccu_status](Images/CCU_StatusBedienung.png)
 
 
 #### Programm
