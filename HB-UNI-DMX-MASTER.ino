@@ -60,8 +60,8 @@ class DMXDev {
       if (dmxStarted == false) init(chanSize);
       if (Channel < 1) Channel = 1;
       if (Channel > chanSize) Channel = chanSize;
-      if (value < 0) value = 0;
-      if (value > 255) value = 255;
+      //if (value < 0) value = 0;
+      //if (value > 255) value = 255;
       dmxData[Channel] = value;
     }
     void update() {
@@ -142,111 +142,41 @@ class DMXList1 : public RegList1<DMXReg1> {
     }
 };
 
-class SwChannel : public Channel<Hal, DMXList1, SwitchList3, EmptyList, PEERS_PER_CHANNEL, DMXList0>, public SwitchStateMachine {
+class SwChannel : public SwitchChannel<Hal,PEERS_PER_CHANNEL,DMXList0> {
+public:
+  SwChannel () {};
+  virtual ~SwChannel () {};
 
-  protected:
-    typedef Channel<Hal, DMXList1, SwitchList3, EmptyList, PEERS_PER_CHANNEL, DMXList0> BaseChannel;
-    uint8_t lastmsgcnt;
-
-  public:
-    SwChannel () : BaseChannel(), lastmsgcnt(0xff) {}
-    virtual ~SwChannel() {}
-
-    void init () {
-      typename BaseChannel::List1 l1 = BaseChannel::getList1();
-      status(l1.powerUpAction() == true ? 200 : 0, 0xffff );
-      BaseChannel::changed(true);
+  void init () {
+    BaseChannel::changed(true);
+  }
+  virtual void switchState(__attribute__((unused)) uint8_t oldstate,uint8_t newstate,__attribute__((unused)) uint32_t delay) {
+    if ( newstate == AS_CM_JT_ON ) {
+      DPRINTLN("SWITCH TURN ON");
+      for (uint8_t cidx = 1; cidx < sizeof(G_DMX_ON_COMMAND) - 1; cidx++) {
+        if (G_DMX_ON_COMMAND[cidx] == MSG_END_CHR)
+          break;
+        uint8_t ch = G_DMX_ON_COMMAND[cidx]; uint8_t val = G_DMX_ON_COMMAND[cidx + 1];
+        DPRINT("Channel = "); DDECLN(ch); DPRINT("Value   = "); DDECLN(val);
+        DmxParam.Channel = ch; DmxParam.Value = val;
+        dmx.write(DmxParam.Channel, DmxParam.Value);
+        cidx++;
+       }
     }
-
-    void setup(Device<Hal, DMXList0>* dev, uint8_t number, uint16_t addr) {
-      BaseChannel::setup(dev, number, addr);
+    else if ( newstate == AS_CM_JT_OFF ) {
+      DPRINTLN("SWITCH TURN OFF");
+      for (uint8_t cidx = 1; cidx < sizeof(G_DMX_OFF_COMMAND) - 1; cidx++) {
+        if (G_DMX_OFF_COMMAND[cidx] == MSG_END_CHR)
+          break;
+        uint8_t ch = G_DMX_OFF_COMMAND[cidx]; uint8_t val = G_DMX_OFF_COMMAND[cidx + 1];
+        DPRINT("Channel = "); DDECLN(ch); DPRINT("Value   = "); DDECLN(val);
+        DmxParam.Channel = ch; DmxParam.Value = val;
+        dmx.write(DmxParam.Channel, DmxParam.Value);
+        cidx++;
+       }
     }
-
-    uint8_t flags () const {
-      uint8_t flags = SwitchStateMachine::flags();
-      if ( this->device().battery().low() == true ) {
-        flags |= 0x80;
-      }
-      return flags;
-    }
-
-    virtual void switchState(__attribute__((unused)) uint8_t oldstate, uint8_t newstate, __attribute__((unused)) uint32_t delay) {
-      if ( newstate == AS_CM_JT_ON ) {
-        DPRINTLN("SWITCH TURN ON");
-        for (uint8_t cidx = 1; cidx < sizeof(G_DMX_ON_COMMAND) - 1; cidx++) {
-          if (G_DMX_ON_COMMAND[cidx] == MSG_END_CHR)
-            break;
-          uint8_t ch = G_DMX_ON_COMMAND[cidx]; uint8_t val = G_DMX_ON_COMMAND[cidx + 1];
-          DPRINT("Channel = "); DDECLN(ch); DPRINT("Value   = "); DDECLN(val);
-          DmxParam.Channel = ch; DmxParam.Value = val;
-          dmx.write(DmxParam.Channel, DmxParam.Value);
-          cidx++;
-        }
-      }
-      else if ( newstate == AS_CM_JT_OFF ) {
-        DPRINTLN("SWITCH TURN OFF");
-        for (uint8_t cidx = 1; cidx < sizeof(G_DMX_OFF_COMMAND) - 1; cidx++) {
-          if (G_DMX_OFF_COMMAND[cidx] == MSG_END_CHR)
-            break;
-          uint8_t ch = G_DMX_OFF_COMMAND[cidx]; uint8_t val = G_DMX_OFF_COMMAND[cidx + 1];
-          DPRINT("Channel = "); DDECLN(ch); DPRINT("Value   = "); DDECLN(val);
-          DmxParam.Channel = ch; DmxParam.Value = val;
-          dmx.write(DmxParam.Channel, DmxParam.Value);
-          cidx++;
-        }
-      }
-      BaseChannel::changed(true);
-    }
-
-    bool process (__attribute__((unused)) const ActionCommandMsg& msg) {
-      DPRINTLN("PROCESS process");
-
-      return true;
-    }
-
-    bool process (const ActionSetMsg& msg) {
-      DPRINTLN("PROCESS ActionSetMsg");
-      status( msg.value(), msg.delay() );
-      return true;
-    }
-
-    bool process (const RemoteEventMsg& msg) {
-      DPRINTLN("PROCESS RemoteEventMsg");
-
-      bool lg = msg.isLong();
-      Peer p(msg.peer());
-      uint8_t cnt = msg.counter();
-      typename BaseChannel::List3 l3 = BaseChannel::getList3(p);
-      if ( l3.valid() == true ) {
-        // l3.dump();
-        typename BaseChannel::List3::PeerList pl = lg ? l3.lg() : l3.sh();
-        // pl.dump();
-        if ( cnt != lastmsgcnt || (lg == true && pl.multiExec() == true) ) {
-          lastmsgcnt = cnt;
-          remote(pl, cnt);
-        }
-        return true;
-      }
-      return false;
-    }
-
-    bool process (const SensorEventMsg& msg) {
-      DPRINTLN("PROCESS SensorEventMsg");
-
-      bool lg = msg.isLong();
-      Peer p(msg.peer());
-      uint8_t cnt = msg.counter();
-      uint8_t value = msg.value();
-      typename BaseChannel::List3 l3 = BaseChannel::getList3(p);
-      if ( l3.valid() == true ) {
-        // l3.dump();
-        typename BaseChannel::List3::PeerList pl = lg ? l3.lg() : l3.sh();
-        // pl.dump();
-        sensor(pl, cnt, value);
-        return true;
-      }
-      return false;
-    }
+    BaseChannel::changed(true);
+  }
 };
 
 class DMXChannel : public Channel<Hal, DMXList1, EmptyList, DefList4, PEERS_PER_CHANNEL, DMXList0>,
@@ -278,7 +208,7 @@ class DMXChannel : public Channel<Hal, DMXList1, EmptyList, DefList4, PEERS_PER_
       return 0;
     }
 
-    bool process (const Message& msg) {
+    bool process (__attribute__((unused)) const Message& msg) {
       DPRINTLN("process Message");
       return true;
     }
@@ -320,7 +250,7 @@ class DMXChannel : public Channel<Hal, DMXList1, EmptyList, DefList4, PEERS_PER_
       return true;
     }
 
-    bool process (const RemoteEventMsg& msg) {
+    bool process (__attribute__((unused)) const RemoteEventMsg& msg) {
       return true;
     }
 
@@ -416,4 +346,3 @@ void loop() {
 
   dmx.update();
 }
-
